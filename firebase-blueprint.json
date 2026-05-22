@@ -1,0 +1,69 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with balance and security settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "balance": { "type": "number" },
+        "pin": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "isVip": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Log of financial movements",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["deposit", "withdrawal", "transfer", "payout", "reward"] },
+        "status": { "type": "string", "enum": ["pending", "success", "failed"] },
+        "amount": { "type": "number" },
+        "method": { "type": "string" },
+        "utr": { "type": "string" },
+        "description": { "type": "string" },
+        "receiver": { "type": "string" },
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "status", "amount"]
+    },
+    "GiftCode": {
+      "title": "Gift Code",
+      "description": "Redeemable balance codes",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "amount": { "type": "number" },
+        "isUsed": { "type": "boolean" },
+        "usedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "usedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "creatorId", "amount", "isUsed"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and balances"
+    },
+    "/transactions/{txnId}": {
+      "schema": "Transaction",
+      "description": "Global transaction logs"
+    },
+    "/giftCodes/{codeId}": {
+      "schema": "GiftCode",
+      "description": "Redeemable VIP codes"
+    }
+  }
+}

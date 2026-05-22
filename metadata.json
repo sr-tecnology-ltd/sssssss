@@ -1,0 +1,6 @@
+{
+  "name": "SR GATEWAY IN",
+  "description": "Secure internal wallet, automatic UPI payment gateway API, disbursements, and user-to-user transfers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
