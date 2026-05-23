@@ -1072,6 +1072,48 @@ async function startServer() {
     }
   });
 
+  // --- FALLBACK SYNC ENDPOINTS ---
+  app.get("/api/user/transactions", authenticateToken, async (req: any, res) => {
+    const db = getDb();
+    if (!db) return res.status(500).json({ status: "error", message: "Database offline" });
+    try {
+      const snap = await db.collection("transactions").where("mobile", "==", req.user.mobile).get();
+      const list = snap.docs.map(doc => {
+        const d = doc.data();
+        return { id: doc.id, ...d };
+      });
+      // Sort client-side of CJS server
+      list.sort((a, b) => {
+        const at = a.timestamp?.seconds || a.timestamp?._seconds || 0;
+        const bt = b.timestamp?.seconds || b.timestamp?._seconds || 0;
+        return bt - at;
+      });
+      res.json({ status: "success", transactions: list });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  app.get("/api/user/chats", authenticateToken, async (req: any, res) => {
+    const db = getDb();
+    if (!db) return res.status(500).json({ status: "error", message: "Database offline" });
+    try {
+      const snap = await db.collection("chats").where("mobile", "==", req.user.mobile).get();
+      const list = snap.docs.map(doc => {
+        const d = doc.data();
+        return { id: doc.id, ...d };
+      });
+      list.sort((a, b) => {
+        const at = a.timestamp?.seconds || a.timestamp?._seconds || 0;
+        const bt = b.timestamp?.seconds || b.timestamp?._seconds || 0;
+        return at - bt;
+      });
+      res.json({ status: "success", chats: list });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
   // --- CLAIM & CREATE CODES (User / Admin) ---
   app.post("/api/giftcode/create", authenticateToken, async (req: any, res) => {
     const { amount, limit, expiryHours, mpin } = req.body;
@@ -1144,6 +1186,10 @@ async function startServer() {
 
       const codeData = codeSnap.data()!;
 
+      if (codeData.isActive === false) {
+        return res.status(400).json({ status: "error", message: "This Gift Code has been deactivated by its creator" });
+      }
+
       if (codeData.isUsed || (codeData.claimedUsers && codeData.claimedUsers.length >= codeData.limit)) {
         return res.status(400).json({ status: "error", message: "This Gift Code usage limit has been reached" });
       }
@@ -1193,6 +1239,77 @@ async function startServer() {
       });
 
       res.json({ status: "success", amount: claimValue, message: "Gift Code claimed successfully into balance!" });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  // --- RETRIEVE & TOGGLE CREATED CODES & LIFAFAS ---
+  app.get("/api/user/codes", authenticateToken, async (req: any, res) => {
+    const db = getDb();
+    if (!db) return res.status(500).json({ status: "error", message: "Database offline" });
+
+    try {
+      const giftSnap = await db.collection("giftCodes").where("creatorId", "==", req.user.uid).get();
+      const lifafaSnap = await db.collection("lifafas").where("creatorId", "==", req.user.uid).get();
+
+      const giftCodes = giftSnap.docs.map(doc => ({
+        id: doc.id,
+        type: "gift",
+        code: doc.data().code,
+        amount: doc.data().amount,
+        limit: doc.data().limit,
+        claimedUsers: doc.data().claimedUsers || [],
+        isActive: doc.data().isActive !== false,
+        createdAt: doc.data().createdAt
+      }));
+
+      const lifafas = lifafaSnap.docs.map(doc => ({
+        id: doc.id,
+        type: "lifafa",
+        code: doc.data().id,
+        amount: doc.data().totalVal,
+        limit: doc.data().limit,
+        claimedUsers: doc.data().claimedUsers || [],
+        isActive: doc.data().isActive !== false,
+        createdAt: doc.data().createdAt
+      }));
+
+      res.json({ status: "success", codes: [...giftCodes, ...lifafas] });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  app.post("/api/user/codes/toggle", authenticateToken, async (req: any, res) => {
+    const { id, type } = req.body;
+    const db = getDb();
+    if (!db) return res.status(500).json({ status: "error", message: "Database offline" });
+
+    if (!id || !type) {
+      return res.status(400).json({ status: "error", message: "Missing id or type parameters" });
+    }
+
+    try {
+      const collectionName = type === "gift" ? "giftCodes" : "lifafas";
+      const docRef = db.collection(collectionName).doc(id);
+      const snap = await docRef.get();
+
+      if (!snap.exists) {
+        return res.status(404).json({ status: "error", message: "Code not found" });
+      }
+
+      const data = snap.data()!;
+      if (data.creatorId !== req.user.uid && !req.user.isAdmin) {
+        return res.status(403).json({ status: "error", message: "Unauthorized action" });
+      }
+
+      const currentStatus = data.isActive !== false;
+      const nextStatus = !currentStatus;
+
+      await docRef.update({ isActive: nextStatus });
+
+      res.json({ status: "success", isActive: nextStatus, message: `Code successfully turned ${nextStatus ? "ON" : "OFF"}!` });
     } catch (e: any) {
       res.status(500).json({ status: "error", message: e.message });
     }
@@ -1260,6 +1377,10 @@ async function startServer() {
       if (!lSnap.exists) return res.status(404).json({ status: "error", message: "This SR X Lifafa expired or doesn't exist" });
 
       const lData = lSnap.data()!;
+
+      if (lData.isActive === false) {
+        return res.status(400).json({ status: "error", message: "This SR X Lifafa has been deactivated by its creator" });
+      }
 
       if (lData.claimedUsers && lData.claimedUsers.includes(req.user.uid)) {
         return res.status(400).json({ status: "error", message: "You have already claim-scratched this Lifafa reward" });

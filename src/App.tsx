@@ -114,6 +114,44 @@ const getTransactionCategory = (type: string) => {
   };
 };
 
+const formatTimestamp = (ts: any) => {
+  if (!ts) return "";
+  try {
+    if (typeof ts.toDate === 'function') {
+      return ts.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    if (ts.seconds) {
+      return new Date(ts.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+  } catch (e) {
+    console.warn("Date parse error", e);
+  }
+  return "";
+};
+
+const formatDateOnly = (ts: any) => {
+  if (!ts) return "Syncing";
+  try {
+    if (typeof ts.toDate === 'function') {
+      return ts.toDate().toLocaleDateString();
+    }
+    if (ts.seconds) {
+      return new Date(ts.seconds * 1000).toLocaleDateString();
+    }
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString();
+    }
+  } catch (e) {
+    console.warn("DateOnly parse fail", e);
+  }
+  return "Recent";
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('home');
   const [showMenu, setShowMenu] = useState<boolean>(false);
@@ -184,6 +222,13 @@ export default function App() {
   const [createLifafaMpin, setCreateLifafaMpin] = useState<string>('');
   const [showCreateLifafaModal, setShowCreateLifafaModal] = useState<boolean>(false);
 
+  // --- USER PROMOS, TRACKING BOARD & EXTRA WITHDRAWAL OPTIONS ---
+  const [userCreatedCodes, setUserCreatedCodes] = useState<any[]>([]);
+  const [showPromoBoard, setShowPromoBoard] = useState<boolean>(false);
+  const [withdrawalMethod, setWithdrawalMethod] = useState<'upi' | 'qr' | 'number'>('upi');
+  const [withdrawalDetails, setWithdrawalDetails] = useState<string>('');
+  const [withdrawalQrCode, setWithdrawalQrCode] = useState<string>('');
+
   // Live Chat system
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatInput, setChatInput] = useState<string>('');
@@ -204,15 +249,18 @@ export default function App() {
     upiId: string;
     telegramBotToken: string;
     telegramBotUsername: string;
+    qrCode: string;
   }>({
     upiId: "srpay@ybl",
     telegramBotToken: "",
-    telegramBotUsername: "SR_Gateway_Alert_Bot"
+    telegramBotUsername: "SR_Gateway_Alert_Bot",
+    qrCode: ""
   });
 
   const [activeUpiInput, setActiveUpiInput] = useState<string>('');
   const [activeBotTokenInput, setActiveBotTokenInput] = useState<string>('');
   const [activeBotUsernameInput, setActiveBotUsernameInput] = useState<string>('');
+  const [activeQrCodeInput, setActiveQrCodeInput] = useState<string>('');
 
   const [showTelegramModal, setShowTelegramModal] = useState<boolean>(false);
   const [tempTelegramChatId, setTempTelegramChatId] = useState<string>('');
@@ -235,12 +283,14 @@ export default function App() {
         const conf = {
           upiId: d.upiId || "srpay@ybl",
           telegramBotToken: d.telegramBotToken || "",
-          telegramBotUsername: d.telegramBotUsername || "SR_Gateway_Alert_Bot"
+          telegramBotUsername: d.telegramBotUsername || "SR_Gateway_Alert_Bot",
+          qrCode: d.qrCode || ""
         };
         setGatewayConfig(conf);
         setActiveUpiInput(conf.upiId);
         setActiveBotTokenInput(conf.telegramBotToken);
         setActiveBotUsernameInput(conf.telegramBotUsername);
+        setActiveQrCodeInput(conf.qrCode);
       }
     }, (err) => {
       console.warn("Global configuration load skipped or not permitted yet. Normal until login:", err.message);
@@ -284,13 +334,59 @@ export default function App() {
         let unsubscribeUser: (() => void) | null = null;
         let unsubscribeTxns: (() => void) | null = null;
         let unsubscribeChats: (() => void) | null = null;
+        let fallbackPollInterval: any = null;
 
         const startSubscriptions = (uid: string) => {
           if (unsubscribeUser) (unsubscribeUser as () => void)();
           if (unsubscribeTxns) (unsubscribeTxns as () => void)();
           if (unsubscribeChats) (unsubscribeChats as () => void)();
+          if (fallbackPollInterval) clearInterval(fallbackPollInterval);
 
           let activeMobile = '';
+          let isPollingActive = false;
+
+          const triggerFallbackPolling = () => {
+            if (isPollingActive) return;
+            isPollingActive = true;
+            console.log("⚠️ Activating secure background polling engine fallback due to direct sync security gates...");
+            
+            const pollData = async () => {
+              const token = localStorage.getItem('sr_token');
+              if (!token) return;
+              try {
+                const headers = { Authorization: `Bearer ${token}` };
+                const [profileRes, txRes, chatRes] = await Promise.all([
+                  axios.get('/api/auth/profile', { headers }),
+                  axios.get('/api/user/transactions', { headers }),
+                  axios.get('/api/user/chats', { headers })
+                ]);
+                
+                if (profileRes.data.status === 'success' && profileRes.data.user) {
+                  const d = profileRes.data.user;
+                  setUserData(d);
+                  localStorage.setItem('sr_user_data', JSON.stringify(d));
+                  if (d.pin === null || d.pin === undefined) {
+                    setForceMpinSetup(true);
+                  } else {
+                    setForceMpinSetup(false);
+                  }
+                }
+                
+                if (txRes.data.status === 'success' && txRes.data.transactions) {
+                  setTransactions(txRes.data.transactions);
+                }
+                
+                if (chatRes.data.status === 'success' && chatRes.data.chats) {
+                  setChatMessages(chatRes.data.chats);
+                }
+              } catch (e) {
+                console.warn("Secure polling fallback cycle aborted:", e);
+              }
+            };
+
+            pollData();
+            fallbackPollInterval = setInterval(pollData, 3000);
+          };
 
           const docRef = doc(db, 'users', uid);
           unsubscribeUser = onSnapshot(docRef, (snap) => {
@@ -314,33 +410,43 @@ export default function App() {
                 const txnsQuery = query(
                   collection(db, 'transactions'),
                   where('mobile', '==', data.mobile),
-                  orderBy('timestamp', 'desc'),
                   limit(50)
                 );
                 unsubscribeTxns = onSnapshot(txnsQuery, (tSnap) => {
                   const list = tSnap.docs.map(tDoc => ({ id: tDoc.id, ...tDoc.data() }));
+                  // Sort client-side of CJS server
+                  list.sort((a: any, b: any) => {
+                    const at = a.timestamp?.seconds || a.timestamp?._seconds || 0;
+                    const bt = b.timestamp?.seconds || b.timestamp?._seconds || 0;
+                    return bt - at;
+                  });
                   setTransactions(list);
                 }, (err) => {
-                  console.error("Txns sync err:", err);
+                  console.warn("Direct Txns sync blocked. Activating API Polling...", err.message);
+                  triggerFallbackPolling();
                 });
 
                 const chatQuery = query(
                   collection(db, 'chats'),
-                  where('mobile', '==', data.mobile),
-                  orderBy('timestamp', 'asc')
+                  where('mobile', '==', data.mobile)
                 );
                 unsubscribeChats = onSnapshot(chatQuery, (cSnap) => {
-                  setChatMessages(cSnap.docs.map(cDoc => {
-                    const cData = cDoc.data();
-                    return { id: cDoc.id, ...cData };
-                  }));
+                  const list = cSnap.docs.map(cDoc => ({ id: cDoc.id, ...cDoc.data() }));
+                  list.sort((a: any, b: any) => {
+                    const at = a.timestamp?.seconds || a.timestamp?._seconds || 0;
+                    const bt = b.timestamp?.seconds || b.timestamp?._seconds || 0;
+                    return at - bt;
+                  });
+                  setChatMessages(list);
                 }, (err) => {
-                  console.error("Chats sync err:", err);
+                  console.warn("Direct Chats sync blocked. Activating API Polling...", err.message);
+                  triggerFallbackPolling();
                 });
               }
             }
           }, (err) => {
-            console.error("User doc live sync error:", err);
+            console.warn("Direct profile sync blocked. Activating API Polling...", err.message);
+            triggerFallbackPolling();
           });
         };
 
@@ -405,6 +511,7 @@ export default function App() {
         fetchAndSubscribe();
 
         return () => {
+          if (fallbackPollInterval) clearInterval(fallbackPollInterval);
           if (unsubscribeUser) {
             try { unsubscribeUser(); } catch(e) {}
           }
@@ -533,6 +640,49 @@ export default function App() {
     setActiveTab('home');
   };
 
+  const fetchUserCreatedCodes = async () => {
+    const token = localStorage.getItem('sr_token');
+    if (!token) return;
+    try {
+      const res = await axios.get('/api/user/codes', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.status === 'success' && res.data.codes) {
+        setUserCreatedCodes(res.data.codes);
+      }
+    } catch (e) {
+      console.error("Failed loading user hosted codes", e);
+    }
+  };
+
+  const handleToggleCode = async (id: string, type: 'gift' | 'lifafa') => {
+    const token = localStorage.getItem('sr_token');
+    if (!token) return;
+    setProcessing(true);
+    try {
+      const res = await axios.post('/api/user/codes/toggle', { id, type }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.data.status === 'success') {
+        fetchUserCreatedCodes();
+        setSuccess(res.data.message);
+        setTimeout(() => setSuccess(null), 1500);
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed changing code status");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  // Poll User Promo Code Hostings (Tracking)
+  useEffect(() => {
+    if (!user) return;
+    fetchUserCreatedCodes();
+    const pTimer = setInterval(fetchUserCreatedCodes, 6000);
+    return () => clearInterval(pTimer);
+  }, [user]);
+
   // --- MPIN Logic Set & Validate ---
   const handleSetupMpin = async () => {
     if (mpinInputVal.length !== 6 || isNaN(Number(mpinInputVal))) {
@@ -600,6 +750,16 @@ export default function App() {
 
   // --- 1-Click QR Code Image Download Helper ---
   const downloadQRCode = () => {
+    if (gatewayConfig.qrCode) {
+      const downloadLink = document.createElement("a");
+      downloadLink.href = gatewayConfig.qrCode;
+      downloadLink.download = "sr_gateway_deposit_merchant_qr.png";
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+      setSuccess("Static QR Code downloaded! Scan directly via Google Pay, PhonePe, or any UPI app.");
+      return;
+    }
     const svg = document.getElementById("deposit-qr-svg");
     if (!svg) {
       setError("QR display element missing.");
@@ -736,31 +896,166 @@ export default function App() {
     }
   };
 
+  // --- Withdrawal Target QR Compression Engine ---
+  const processWithdrawImageFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 450;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > maxDim) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL('image/jpeg', 0.6);
+          setWithdrawalQrCode(compressed);
+          setSuccess("Withdrawal receiving QR loaded & attached successfully!");
+          setTimeout(() => setSuccess(null), 1500);
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleWithdrawFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processWithdrawImageFile(file);
+    }
+  };
+
+  const handleAdminQrFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 450;
+          let width = img.width;
+          let height = img.height;
+          if (width > height) {
+            if (width > maxDim) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressed = canvas.toDataURL('image/jpeg', 0.6);
+            setActiveQrCodeInput(compressed);
+            setSuccess("Admin Custom Deposit QR loaded successfully!");
+            setTimeout(() => setSuccess(null), 1500);
+          }
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   // --- Outbound Payout / Withdrawal Disburse ---
   const handlePayout = async () => {
-    if (!payoutNumber || !payoutAmount) return;
+    if (!payoutAmount) {
+      setError("Please specify the amount to withdraw");
+      return;
+    }
+    
+    let receiverVal = '';
+    let attachedQr = '';
+    
+    if (withdrawalMethod === 'upi') {
+      if (!withdrawalDetails) {
+        setError("Please enter your receiving UPI Address match");
+        return;
+      }
+      receiverVal = `UPI ID: ${withdrawalDetails}`;
+    } else if (withdrawalMethod === 'number') {
+      if (!withdrawalDetails) {
+        setError("Please provide phone / bank account or details");
+        return;
+      }
+      receiverVal = `Details: ${withdrawalDetails}`;
+    } else if (withdrawalMethod === 'qr') {
+      if (!withdrawalQrCode) {
+        setError("Please upload your payment receiving custom QR code image");
+        return;
+      }
+      receiverVal = "Scan Attached QR Code";
+      attachedQr = withdrawalQrCode;
+    }
+
     setProcessing(true);
     setError(null);
     try {
-      // Registers disburse request as pending for admin approval/automatic release
+      const amtVal = parseFloat(payoutAmount);
+      if (isNaN(amtVal) || amtVal <= 0) {
+        throw new Error("Specify a valid withdrawal amount");
+      }
+
+      const newTxnId = `PAY_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+      
+      // Registers withdrawal request to firebase
       await addDoc(collection(db, 'transactions'), {
-        id: `PAY_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+        id: newTxnId,
         userId: userData.uid,
         userName: userData.displayName,
         mobile: userData.mobile,
         type: "payout",
-        amount: parseFloat(payoutAmount),
-        receiver: payoutNumber,
-        comment: payoutComment || "withdrawal-portal",
+        amount: amtVal,
+        receiver: receiverVal,
+        screenshot: attachedQr || "", // Mapping receiving QR directly to screenshot so administrator scans or views it out-of-the-box!
+        comment: payoutComment || `Withdrawal Mode: ${withdrawalMethod.toUpperCase()}`,
         status: "pending",
         timestamp: serverTimestamp()
       });
 
-      setSuccess("Your payout request has been registered and sent for processing!");
+      setSuccess("Your withdrawal request has been submitted to administrator for check!");
       setPayoutNumber('');
       setPayoutAmount('');
       setPayoutComment('');
+      setWithdrawalDetails('');
+      setWithdrawalQrCode('');
       setActiveTab('home');
+
+      // Send telegram alert
+      try {
+        await axios.post('/api/user/deposit/alert', {
+          amount: payoutAmount,
+          utr: `WITHDRAWAL_${withdrawalMethod.toUpperCase()}`,
+          txnId: newTxnId
+        }, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('sr_token')}` }
+        });
+      } catch (err) {
+        console.warn("Withdrawal alert fail", err);
+      }
+      
     } catch (err: any) {
       setError("Registration failed: " + err.message);
     } finally {
@@ -1080,7 +1375,8 @@ export default function App() {
       await setDoc(doc(db, 'settings', 'global'), {
         upiId: activeUpiInput,
         telegramBotToken: activeBotTokenInput,
-        telegramBotUsername: activeBotUsernameInput
+        telegramBotUsername: activeBotUsernameInput,
+        qrCode: activeQrCodeInput
       }, { merge: true });
       setSuccess("Gateway Configuration successfully saved & updated globally in real-time! 🚀");
     } catch (err: any) {
@@ -1431,6 +1727,80 @@ export default function App() {
                 </div>
               </section>
 
+              {/* --- HOSTED CODE CAMPAIGNS TRACKER --- */}
+              <section className="p-8 bg-gradient-to-b from-purple-950/20 to-transparent border border-purple-500/10 rounded-[2.5rem] space-y-6 shadow-[0_0_20px_rgba(168,85,247,0.05)]">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.1)]"><Sparkles className="w-5 h-5 animate-pulse" /></div>
+                    <div>
+                      <h4 className="text-sm font-black uppercase text-purple-400 tracking-wider">Campaign Tracking Hub</h4>
+                      <p className="text-[8px] text-slate-500 font-bold uppercase pb-0.5">Your Active Gift Codes & Lucky Lifafas</p>
+                    </div>
+                  </div>
+                  <button onClick={fetchUserCreatedCodes} className="p-2 bg-white/5 hover:bg-white/10 text-slate-400 rounded-lg text-xs"><RefreshCcw className={cn("w-3.5 h-3.5", processing ? "animate-spin" : "")} /></button>
+                </div>
+
+                <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                  {userCreatedCodes && userCreatedCodes.length > 0 ? (
+                    userCreatedCodes.map((item: any) => {
+                      const isGift = item.type === 'gift';
+                      const isCampaignActive = item.active !== false; 
+                      const claimLimit = item.limit || 1;
+                      const claimsCount = item.claimers ? item.claimers.length : 0;
+                      return (
+                        <div key={item.id} className="p-4 bg-black/45 border border-white/5 rounded-2xl flex items-center justify-between gap-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className={cn(
+                                "text-[7px] font-black uppercase px-2 py-0.5 rounded",
+                                isGift ? "bg-teal-500/10 text-teal-400 border border-teal-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20"
+                              )}>
+                                {isGift ? "Gift Card" : "Lucky Lifafa"}
+                              </span>
+                              <span className="font-mono text-[10px] font-black text-rose-300 select-all tracking-wider">{item.id}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <p className="text-[9px] text-slate-400 font-bold">
+                                Value: <span className="text-white font-extrabold">₹{item.amount}</span>
+                              </p>
+                              <p className="text-[9px] text-slate-500 font-bold">•</p>
+                              <p className="text-[9px] text-slate-400 font-bold">
+                                Claims: <span className="text-white font-extrabold">{claimsCount} / {claimLimit}</span>
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-2">
+                            <span className={cn(
+                              "text-[8px] font-black uppercase tracking-widest",
+                              isCampaignActive ? "text-emerald-500" : "text-slate-600"
+                            )}>
+                              {isCampaignActive ? "ONLINE" : "OFFLINE"}
+                            </span>
+                            <button
+                              onClick={() => handleToggleCode(item.id, item.type)}
+                              disabled={processing}
+                              className={cn(
+                                "px-3.5 py-2 text-[8px] font-black uppercase tracking-wider rounded-lg transition-all active:scale-95 disabled:opacity-50",
+                                isCampaignActive
+                                  ? "bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/20"
+                                  : "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/20"
+                              )}
+                            >
+                              {isCampaignActive ? "OFF" : "ON"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="py-6 text-center text-slate-600 text-[10px] uppercase font-bold italic border border-dashed border-white/5 bg-black/10 rounded-2xl">
+                      No matching hosted promotion codes found currently.
+                    </div>
+                  )}
+                </div>
+              </section>
+
               {/* CORE METRIC SHUNTS */}
               <section className="grid grid-cols-2 gap-4">
                 <button onClick={() => setActiveTab('bulk')} className="p-6 bg-white/5 border border-white/5 rounded-3xl flex flex-col items-center gap-3 hover:bg-white/10 transition-all group hover:border-yellow-500/20 shadow-[0_0_12px_rgba(255,255,255,0.02)]">
@@ -1456,7 +1826,7 @@ export default function App() {
                   {chatMessages.map((msg, i) => (
                     <div key={i} className={cn("max-w-[85%] p-3 rounded-xl", msg.sender === 'admin' ? "bg-blue-600 text-white mr-auto" : "bg-white/5 text-white ml-auto border border-white/5")}>
                       <p className="leading-relaxed font-bold">{msg.message}</p>
-                      <span className="text-[7px] text-white/50 block text-right mt-1 font-mono">{msg.timestamp?.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                      <span className="text-[7px] text-white/50 block text-right mt-1 font-mono">{formatTimestamp(msg.timestamp) || "Recent"}</span>
                     </div>
                   ))}
                   {chatMessages.length === 0 && (
@@ -1496,7 +1866,7 @@ export default function App() {
                           </div>
                           <div>
                             <p className="uppercase tracking-widest text-[9px] text-white leading-tight">{cat.label}</p>
-                            <p className="text-[7px] text-slate-600 uppercase font-black mt-0.5">{txn.status}</p>
+                            <p className="text-[7px] text-slate-500 uppercase font-black mt-0.5">{txn.status} • {formatDateOnly(txn.timestamp)}</p>
                           </div>
                         </div>
                         <div className="text-right">
@@ -1595,7 +1965,7 @@ export default function App() {
                            <div className="space-y-1">
                              <p className="text-[10px] font-black uppercase tracking-[0.2em] leading-tight text-white">{cat.label}</p>
                              <p className="text-[8px] text-slate-500 uppercase font-black">
-                               {txn.status} • {txn.timestamp ? new Date(txn.timestamp?.toDate()).toLocaleDateString() : 'Syncing'}
+                               {txn.status} • {formatTimestamp(txn.timestamp)}
                              </p>
                              {txn.utr && <p className="text-[8px] text-emerald-500 font-mono tracking-tighter mt-1">UTR: {txn.utr}</p>}
                              {txn.receiver && <p className="text-[8px] text-blue-400 font-mono mt-1">To: {txn.receiver}</p>}
@@ -1635,7 +2005,11 @@ export default function App() {
                    <div className="relative group cursor-pointer" onClick={downloadQRCode} title="Click to Download QR Code">
                       <div className="absolute inset-0 bg-emerald-500 blur-3xl opacity-10 group-hover:opacity-20 transition-opacity" />
                       <div className="relative p-5 bg-white rounded-[2rem] shadow-2xl transition-transform group-hover:scale-[1.02]">
-                        <QRCodeSVG id="deposit-qr-svg" value={`upi://pay?pa=${gatewayConfig.upiId}&pn=SR+GATEWAY+IN`} size={180} />
+                        {gatewayConfig.qrCode ? (
+                          <img src={gatewayConfig.qrCode} alt="Merchant QR Code" className="w-[180px] h-[180px] object-contain rounded-xl text-black font-bold text-center flex items-center justify-center text-xs" />
+                        ) : (
+                          <QRCodeSVG id="deposit-qr-svg" value={`upi://pay?pa=${gatewayConfig.upiId}&pn=SR+GATEWAY+IN`} size={180} />
+                        )}
                       </div>
                       <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-4 py-1.5 bg-black hover:bg-slate-900 border border-emerald-500/30 text-emerald-400 font-extrabold uppercase text-[7px] tracking-widest rounded-lg transition-all animate-pulse whitespace-nowrap shadow-[0_0_10px_rgba(16,185,129,0.3)]">
                         🖱️ Click QR to Download
@@ -1717,48 +2091,155 @@ export default function App() {
             <motion.div key="payout" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-8">
                <div className="flex items-center gap-4">
                  <button onClick={() => setActiveTab('home')} className="p-2.5 hover:bg-white/5 rounded-xl text-slate-500"><ChevronRight className="w-6 h-6 rotate-180" /></button>
-                 <h2 className="text-3xl font-black italic uppercase tracking-tighter">Authorize Pay</h2>
+                 <h2 className="text-3xl font-black italic uppercase tracking-tighter text-yellow-500">Secure Withdrawal</h2>
                </div>
 
                <div className="bg-yellow-500/5 border border-yellow-500/20 p-8 rounded-[2.5rem] space-y-6">
-                 <div className="space-y-4 px-1">
-                    <div className="space-y-1">
-                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Receiver Account</label>
+                 {/* 1. SELECT AMOUNT PRESETS */}
+                 <div className="space-y-2">
+                   <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Select Amount (INR)</label>
+                   <div className="grid grid-cols-3 gap-2">
+                     {["100", "500", "1000", "2000", "5000", "10000"].map((preset) => (
+                       <button
+                         key={preset}
+                         type="button"
+                         onClick={() => setPayoutAmount(preset)}
+                         className={cn(
+                           "py-3 rounded-xl font-bold text-xs uppercase transition-all tracking-wider border",
+                           payoutAmount === preset 
+                             ? "bg-yellow-500 text-black border-yellow-500 font-black scale-[1.02] shadow-[0_0_15px_rgba(234,179,8,0.2)]" 
+                             : "bg-black/45 hover:bg-white/5 border-white/10 text-slate-400"
+                         )}
+                       >
+                         ₹{preset}
+                       </button>
+                     ))}
+                   </div>
+                 </div>
+
+                 {/* Custom Amount Entry */}
+                 <div className="space-y-1">
+                    <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Or Enter Exact Amount</label>
+                    <input 
+                      type="number" 
+                      value={payoutAmount}
+                      onChange={(e) => setPayoutAmount(e.target.value)}
+                      placeholder="Enter other custom value"
+                      className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 font-black italic text-xl outline-none focus:border-yellow-500 text-yellow-500"
+                    />
+                 </div>
+
+                 {/* 2. CHOOSE PAYMENT CHANNEL */}
+                 <div className="space-y-2 pt-2">
+                   <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Choose Payment Destination Mode</label>
+                   <div className="grid grid-cols-3 gap-2">
+                     {(['upi', 'qr', 'number'] as const).map((method) => {
+                       let label = "UPI ID";
+                       if (method === 'qr') label = "QR Code";
+                       if (method === 'number') label = "Bank Details";
+                       return (
+                         <button
+                           key={method}
+                           type="button"
+                           onClick={() => {
+                             setWithdrawalMethod(method);
+                             setWithdrawalDetails('');
+                           }}
+                           className={cn(
+                             "py-3.5 rounded-xl font-black text-[9px] uppercase tracking-wider transition-all border",
+                             withdrawalMethod === method
+                               ? "bg-white text-black border-white shadow-2xl"
+                               : "bg-black/45 hover:bg-white/5 border-white/10 text-slate-400"
+                           )}
+                         >
+                           {label}
+                         </button>
+                       );
+                     })}
+                   </div>
+                 </div>
+
+                 {/* 3. CONDITIONAL METHOD INPUTS */}
+                 <div className="space-y-4 pt-1">
+                   {withdrawalMethod === 'upi' && (
+                     <div className="space-y-1">
+                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Your Receiving UPI Address</label>
                        <input 
-                         type="text" 
-                         value={payoutNumber}
-                         onChange={(e) => setPayoutNumber(e.target.value.replace(/\D/g, ''))}
-                         placeholder="10-Digit Mobile Number"
-                         className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 font-bold text-lg outline-none focus:border-yellow-500 font-mono tracking-widest text-white"
+                         type="text"
+                         value={withdrawalDetails}
+                         onChange={(e) => setWithdrawalDetails(e.target.value)}
+                         placeholder="e.g. yourname@ybl, mobile@paytm"
+                         className="w-full bg-black border border-white/10 rounded-2xl py-4.5 px-6 font-bold text-sm outline-none focus:border-yellow-500 text-white"
                        />
-                    </div>
-                    <div className="space-y-1">
-                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Disburse Value (INR)</label>
-                       <input 
-                         type="number" 
-                         value={payoutAmount}
-                         onChange={(e) => setPayoutAmount(e.target.value)}
-                         placeholder="0.00"
-                         className="w-full bg-black border border-white/10 rounded-2xl py-4.5 px-6 font-black italic text-2xl outline-none focus:border-yellow-500 text-yellow-500"
+                     </div>
+                   )}
+
+                   {withdrawalMethod === 'number' && (
+                     <div className="space-y-1">
+                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Your Mobile Number or Bank details</label>
+                       <textarea 
+                         value={withdrawalDetails}
+                         onChange={(e) => setWithdrawalDetails(e.target.value)}
+                         placeholder="Specify receiving Mobile number, or Bank Account No, Bank Name, and IFSC details"
+                         rows={2}
+                         className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 font-bold text-xs outline-none focus:border-yellow-500 text-white"
                        />
-                    </div>
-                    <div className="space-y-1">
-                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Disburse Comment</label>
-                       <input 
-                         type="text" 
-                         value={payoutComment}
-                         onChange={(e) => setPayoutComment(e.target.value)}
-                         placeholder="Standard payout reference"
-                         className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-xs font-bold outline-none focus:border-yellow-500 text-white"
-                       />
-                    </div>
-                    <button 
-                      onClick={() => triggerActionWithPin(handlePayout)}
-                      disabled={!payoutNumber || !payoutAmount || processing}
-                      className="w-full py-5 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase tracking-widest rounded-2xl shadow-2xl active:scale-95 disabled:opacity-50 transition-all text-xs"
-                    >
-                      {processing ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Authorize Fund Release'}
-                    </button>
+                     </div>
+                   )}
+
+                   {withdrawalMethod === 'qr' && (
+                     <div className="space-y-3">
+                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Upload Payout Receiving QR Code</label>
+                       <div className="border border-dashed border-white/10 p-6 rounded-2xl bg-black/40 flex flex-col items-center justify-center text-center space-y-4">
+                         {withdrawalQrCode ? (
+                           <div className="relative">
+                             <img src={withdrawalQrCode} alt="payout qr" className="w-28 h-28 object-contain rounded-xl border border-white/20 shadow-2xl" />
+                             <button
+                               type="button"
+                               onClick={() => setWithdrawalQrCode('')}
+                               className="absolute -top-1.5 -right-1.5 bg-red-600 rounded-full p-1 text-white hover:bg-red-500"
+                             >
+                               <X className="w-3" />
+                             </button>
+                           </div>
+                         ) : (
+                           <>
+                             <div className="w-12 h-12 rounded-xl bg-white/5 flex items-center justify-center text-slate-400"><Upload className="w-5 h-5 animate-pulse" /></div>
+                             <div className="space-y-1">
+                               <p className="text-[10px] font-extrabold uppercase text-white tracking-widest">Select Target QR File</p>
+                               <p className="text-[8px] text-slate-500 font-bold">Image size is compressed automatically</p>
+                             </div>
+                           </>
+                         )}
+                         <input 
+                           type="file" 
+                           accept="image/*"
+                           onChange={handleWithdrawFileChange}
+                           className="text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-black file:uppercase file:bg-yellow-500 file:text-black hover:file:bg-yellow-400 cursor-pointer"
+                         />
+                       </div>
+                     </div>
+                   )}
+
+                   {/* Commment row / Payout Comment */}
+                   <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic px-1">Withdrawal Remark (Optional)</label>
+                      <input 
+                        type="text" 
+                        value={payoutComment}
+                        onChange={(e) => setPayoutComment(e.target.value)}
+                        placeholder="e.g. self, emergency load"
+                        className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-xs font-bold outline-none focus:border-yellow-500 text-white"
+                      />
+                   </div>
+
+                   <button 
+                     onClick={() => triggerActionWithPin(handlePayout)}
+                     disabled={!payoutAmount || processing}
+                     className="w-full py-5 bg-yellow-500 hover:bg-yellow-400 text-black font-black uppercase tracking-widest rounded-2xl shadow-2xl active:scale-95 disabled:opacity-50 transition-all text-xs"
+                   >
+                     {processing ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Submit Withdrawal Request'}
+                   </button>
                  </div>
                </div>
             </motion.div>
@@ -2011,6 +2492,31 @@ export default function App() {
                        className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-xs font-mono outline-none focus:border-purple-500 text-white"
                      />
                    </div>
+                    <div className="space-y-1.5 px-1">
+                      <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Static Deposit QR Code (Image Override)</label>
+                      <div className="border border-dashed border-white/10 p-4 rounded-xl bg-black/40 flex flex-col items-center justify-center space-y-2">
+                        {activeQrCodeInput ? (
+                          <div className="relative">
+                            <img src={activeQrCodeInput} alt="Merchant QR" className="w-24 h-24 object-contain rounded-lg border border-white/10" />
+                            <button
+                              type="button"
+                              onClick={() => setActiveQrCodeInput('')}
+                              className="absolute -top-1 -right-1 bg-red-600 rounded-full p-1 text-white hover:bg-red-500"
+                            >
+                              <X className="w-2.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-[9px] text-slate-500 font-bold uppercase animate-pulse">No Static QR override (Generates dynamically via UPI)</p>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleAdminQrFileChange}
+                          className="text-xs text-slate-500 file:mr-4 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[8px] file:font-black file:uppercase file:bg-purple-600 file:text-white hover:file:bg-purple-500 cursor-pointer"
+                        />
+                      </div>
+                    </div>
                    <button 
                      onClick={handleSaveGatewayConfig}
                      disabled={processing}

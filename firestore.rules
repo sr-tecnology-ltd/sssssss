@@ -16,7 +16,7 @@ service cloud.firestore {
       return isSignedIn() && 
              res != null && 
              res.data != null && 
-             res.data.get('mobile', '') == request.auth.token.email.split('@')[0];
+             request.auth.token.email == res.data.get('mobile', '') + '@kingwallet.com';
     }
 
     function isAdmin() {
