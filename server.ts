@@ -164,23 +164,60 @@ async function startServer() {
 
   app.use(express.json());
 
-  // --- Telegram System Alert Utility ---
-  const sendTelegramAlert = async (message: string) => {
-    const botToken = process.env.BOT_TOKEN;
-    const chatId = process.env.TELEGRAM_CHAT_ID;
-    if (!botToken || !chatId) {
-      console.log(`[Telegram Alert Simulation]:\n${message}`);
-      return;
-    }
+  // --- Global Dynamic Settings Helper ---
+  const getGlobalSettings = async () => {
     try {
+      const db = getDb();
+      if (db) {
+        const snap = await db.collection("settings").doc("global").get();
+        if (snap.exists) {
+          return snap.data() || {};
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to read global settings:", err.message);
+    }
+    return {};
+  };
+
+  // --- Telegram System Alert Utility (Sends to Admin) ---
+  const sendTelegramAlert = async (message: string) => {
+    try {
+      const settings = await getGlobalSettings();
+      const botToken = settings.telegramBotToken || process.env.BOT_TOKEN;
+      const chatId = process.env.TELEGRAM_CHAT_ID;
+      if (!botToken || !chatId) {
+        console.log(`[Telegram Admin Alert Simulation]:\n${message}`);
+        return;
+      }
       await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         chat_id: chatId,
         text: message,
         parse_mode: "HTML"
       });
-      console.log("[Telegram message delivered successfully]");
+      console.log("[Telegram Admin alert delivered successfully]");
     } catch (err: any) {
-      console.error("[Telegram sendMessage call failed]:", err.message);
+      console.error("[Telegram sendTelegramAlert failed]:", err.message);
+    }
+  };
+
+  // --- Telegram Personal Alert Utility (Sends to Specific Users) ---
+  const sendPersonalTelegramMessage = async (chatId: string, message: string) => {
+    try {
+      const settings = await getGlobalSettings();
+      const botToken = settings.telegramBotToken || process.env.BOT_TOKEN;
+      if (!botToken || !chatId) {
+        console.log(`[Telegram Personal Alert Simulation to ${chatId}]:\n${message}`);
+        return;
+      }
+      await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        chat_id: chatId,
+        text: message,
+        parse_mode: "HTML"
+      });
+      console.log(`[Telegram personal message delivered successfully to ${chatId}]`);
+    } catch (err: any) {
+      console.error(`[Telegram sendPersonalTelegramMessage failed for ${chatId}]:`, err.message);
     }
   };
 
@@ -963,6 +1000,78 @@ async function startServer() {
     }
   });
 
+  app.post("/api/user/save-telegram-id", authenticateToken, async (req: any, res) => {
+    const { chatId } = req.body;
+    if (!chatId) return res.status(400).json({ status: "error", message: "Telegram Chat ID is required" });
+    const db = getDb();
+    if (!db) return res.status(500).json({ status: "error", message: "Database offline" });
+
+    try {
+      const uRef = db.collection("users").doc(req.user.uid);
+      await uRef.update({ telegramChatId: chatId });
+
+      // Send a congratulatory verification alert directly to their newly connected personal Telegram chat ID!
+      const settings = await getGlobalSettings();
+      const botUser = settings.telegramBotUsername || "SR_Gateway_Alert_Bot";
+      const uSnap = await uRef.get();
+      const uData = uSnap.data() || {};
+
+      const syncMsg = `<b>🎉 Telegram Alerting Connected Successfully!</b>\n\n` +
+                      `Hello <b>${uData.displayName || "Operator"}</b>,\n` +
+                      `Congratulations! Your SR GATEWAY account has been successfully linked to this telegram node handle under <code>${chatId}</code>.\n\n` +
+                      `<b>Linked Parameters:</b>\n` +
+                      `• Mobile Number: ${uData.mobile || "N/A"}\n` +
+                      `• Node Status: Live & Synced\n\n` +
+                      `You will now receive instant receipt verification alerts, withdrawal confirmations, and account security notifications in real-time!`;
+
+      await sendPersonalTelegramMessage(chatId, syncMsg);
+
+      res.json({ status: "success", message: "Congratulations! Connected successfully to Telegram Alerting Bot!" });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  app.post("/api/user/deposit/alert", authenticateToken, async (req: any, res) => {
+    const { amount, utr, txnId } = req.body;
+    const db = getDb();
+    if (!db) return res.status(500).json({ status: "error", message: "Database offline" });
+
+    try {
+      const userRef = await db.collection("users").doc(req.user.uid).get();
+      const userData = userRef.data();
+      if (!userData) return res.status(404).json({ status: "error", message: "User profile not found" });
+
+      // Send 📥 Deposit Alert to Admin
+      const adminMsg = `<b>📥 New Deposit Request Registered</b>\n\n` +
+                       `<b>User Profile:</b> ${userData.displayName || "N/A"} (${userData.mobile || "N/A"})\n` +
+                       `<b>Amount:</b> ₹${parseFloat(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}\n` +
+                       `<b>UTR Ref:</b> <code>${utr}</code>\n` +
+                       `<b>Transaction ID:</b> <code>${txnId}</code>\n\n` +
+                       `Review and process this request instantly on the SR GATEWAY ADMIN panel console!`;
+      await sendTelegramAlert(adminMsg);
+
+      // Send 📥 Deposit Confirmation to User (if Telegram is connected)
+      if (userData.telegramChatId) {
+        const userMsg = `<b>📥 Deposit Registered Securely</b>\n\n` +
+                        `Dear ${userData.displayName || "User"},\n` +
+                        `We have received your deposit request of <b>₹${parseFloat(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</b> with UTR ref <code>${utr}</code> under verification.\n\n` +
+                        `<b>Status:</b> Pending System Approval\n` +
+                        `<b>Transaction ID:</b> ${txnId}\n\n` +
+                        `We will notify you via Telegram matching this handle immediately upon operator audit validation.`;
+        await userRef.ref.update({
+          lastSeen: new Date()
+        });
+        await sendPersonalTelegramMessage(userData.telegramChatId, userMsg);
+      }
+
+      res.json({ status: "success", message: "Deposit alerted successfully!" });
+    } catch (e: any) {
+      console.error("Deposit alert dispatch failed:", e.message);
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
   // --- CLAIM & CREATE CODES (User / Admin) ---
   app.post("/api/giftcode/create", authenticateToken, async (req: any, res) => {
     const { amount, limit, expiryHours, mpin } = req.body;
@@ -1418,6 +1527,30 @@ async function startServer() {
           transaction.update(txnDoc.ref, { status: "failed" });
         }
       });
+
+      // Send personal user update if a Telegram Chat ID is linked
+      try {
+        const uRef = db.collection("users").doc(txnData.userId);
+        const userSnap = await uRef.get();
+        const userData = userSnap.data();
+        if (userData && userData.telegramChatId) {
+          const typeLabel = txnData.type === "deposit" ? "Deposit" : "Withdrawal";
+          const statusIcon = action === "approve" ? "✅ APPROVED" : "❌ REJECTED";
+          
+          const alertMsg = `<b>🔔 Transaction Status Alert</b>\n\n` +
+                           `Dear <b>${userData.displayName || "Operator"}</b>,\n` +
+                           `Your requested transaction has been processed:\n\n` +
+                           `• <b>Type:</b> ${typeLabel}\n` +
+                           `• <b>Amount:</b> ₹${txnData.amount?.toLocaleString('en-IN', { minimumFractionDigits: 2 })}\n` +
+                           `• <b>Status:</b> ${statusIcon}\n` +
+                           `• <b>ID:</b> <code>${txnData.id}</code>\n\n` +
+                           `Thank you for using SR GATEWAY IN!`;
+                           
+          await sendPersonalTelegramMessage(userData.telegramChatId, alertMsg);
+        }
+      } catch (err: any) {
+        console.error("Personal Telegram transaction status alert failed:", err.message);
+      }
 
       res.json({ status: "success", message: `Transaction request ${action}ed!` });
     } catch (e: any) {

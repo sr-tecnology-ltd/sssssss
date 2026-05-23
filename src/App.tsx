@@ -35,7 +35,8 @@ import {
   Settings,
   Download,
   Menu,
-  Minus
+  Minus,
+  Upload
 } from 'lucide-react';
 import { db, auth, logOut as firebaseLogOut } from './lib/firebase';
 import { 
@@ -590,6 +591,45 @@ export default function App() {
     }
   };
 
+  // --- 1-Click QR Code Image Download Helper ---
+  const downloadQRCode = () => {
+    const svg = document.getElementById("deposit-qr-svg");
+    if (!svg) {
+      setError("QR display element missing.");
+      return;
+    }
+    try {
+      const svgString = new XMLSerializer().serializeToString(svg);
+      const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+      const blobURL = URL.createObjectURL(svgBlob);
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 320;
+        const context = canvas.getContext("2d");
+        if (context) {
+          // Fill background with crystal white for high-contrast scanning readability
+          context.fillStyle = "#FFFFFF";
+          context.fillRect(0, 0, 320, 320);
+          context.drawImage(image, 15, 15, 290, 290);
+          const png = canvas.toDataURL("image/png");
+          const downloadLink = document.createElement("a");
+          downloadLink.href = png;
+          downloadLink.download = "sr_gateway_deposit_qr.png";
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+          setSuccess("QR Code image downloaded! Scan directly via Google Pay/PhonePe/Any UPI application.");
+        }
+      };
+      image.src = blobURL;
+    } catch (err: any) {
+      console.error("QR download failed:", err);
+      setError("Failed to export QR code image. Please take a manual screenshot.");
+    }
+  };
+
   // --- File Conversion helper to shrink user screenshots ---
   const processImageFile = (file: File) => {
     const reader = new FileReader();
@@ -648,8 +688,10 @@ export default function App() {
         lastSeen: serverTimestamp()
       });
 
+      const newTxnId = `DEP_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+
       await addDoc(collection(db, 'transactions'), {
-        id: `DEP_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+        id: newTxnId,
         userId: userData.uid,
         userName: userData.displayName,
         mobile: userData.mobile,
@@ -660,6 +702,20 @@ export default function App() {
         status: "pending",
         timestamp: serverTimestamp()
       });
+
+      // Notify the server-side Telegram alerting engine
+      try {
+        const token = localStorage.getItem('sr_token');
+        await axios.post('/api/user/deposit/alert', {
+          txnId: newTxnId,
+          amount: parseFloat(depositAmount),
+          utr: depositUtr
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      } catch (alertErr: any) {
+        console.error("Backend Telegram notification dispatcher failed:", alertErr);
+      }
 
       setSuccess("Your Deposit Request has been registered! System verification is active.");
       setDepositAmount('');
@@ -1094,7 +1150,10 @@ export default function App() {
           </div>
         </div>
       </div>
-     // AUTH UI
+    );
+  }
+
+  // AUTH UI
   if (!user) {
     const isAdminScreen = isAdminPathActive;
     return (
@@ -1180,7 +1239,7 @@ export default function App() {
               </button>
             </div>
           </div>
-        </motion.div>tion.div>
+        </motion.div>
 
         {/* Floating Error Alert */}
         <AnimatePresence>
@@ -1202,8 +1261,13 @@ export default function App() {
       <header className="sticky top-0 z-40 bg-black/80 backdrop-blur-xl border-b border-white/5">
         <div className="max-w-lg mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div onClick={() => setActiveTab('home')} className="w-10 h-10 bg-yellow-500 rounded-[1.2rem] flex items-center justify-center shrink-0 shadow-lg cursor-pointer active:scale-90 transition-transform">
-              <Wallet className="w-5 h-5 text-black" />
+            <div 
+              onClick={() => setActiveTab('home')} 
+              className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0 cursor-pointer active:scale-90 transition-all shadow-[0_0_15px_rgba(234,179,8,0.45)] border-2 font-black italic text-sm text-black select-none",
+                isAdminPathActive ? "from-purple-600 to-purple-400 border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.45)] bg-gradient-to-tr" : "from-yellow-600 to-yellow-400 border-yellow-400 bg-gradient-to-tr"
+              )}
+            >
+              SR
             </div>
             <div>
               <h2 className="text-lg font-black italic tracking-tighter uppercase">
@@ -1279,10 +1343,16 @@ export default function App() {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3.5">
-                    <button onClick={() => setActiveTab('deposit')} className="py-4.5 bg-white text-black font-black uppercase text-[10px] tracking-[0.2em] rounded-xl shadow-xl active:scale-95 transition-all hover:bg-slate-100 font-bold">
-                      LOAD FUND
+                    <button 
+                      onClick={() => setActiveTab('deposit')} 
+                      className="py-4.5 bg-gradient-to-r from-yellow-500 to-amber-500 hover:from-yellow-400 hover:to-amber-400 text-black font-black uppercase text-[10px] tracking-[0.2em] rounded-xl active:scale-95 transition-all shadow-[0_0_20px_rgba(234,179,8,0.35)] hover:shadow-[0_0_30px_rgba(234,179,8,0.6)] font-bold border border-yellow-300/30"
+                    >
+                      DEPOSIT
                     </button>
-                    <button onClick={() => setActiveTab('payout')} className="py-4.5 bg-white/5 border border-white/10 text-white font-black uppercase text-[10px] tracking-[0.2em] rounded-xl active:scale-95 transition-all hover:bg-white/10 font-bold">
+                    <button 
+                      onClick={() => setActiveTab('payout')} 
+                      className="py-4.5 bg-white/5 border border-white/10 text-white font-black uppercase text-[10px] tracking-[0.2em] rounded-xl active:scale-95 transition-all hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] font-bold"
+                    >
                       WITHDRAWAL
                     </button>
                   </div>
@@ -1550,33 +1620,39 @@ export default function App() {
             <motion.div key="deposit" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-8">
                <div className="flex items-center gap-4">
                  <button onClick={() => setActiveTab('home')} className="p-2.5 hover:bg-white/5 rounded-xl text-slate-500"><ChevronRight className="w-6 h-6 rotate-180" /></button>
-                 <h2 className="text-3xl font-black italic uppercase tracking-tighter">Load Funds</h2>
+                 <h2 className="text-3xl font-black italic uppercase tracking-tighter">Deposit Funds</h2>
                </div>
                
-               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-8">
+               <div className="bg-emerald-500/5 border border-emerald-500/20 p-8 rounded-[2.5rem] space-y-8 shadow-[0_0_20px_rgba(16,185,129,0.05)]">
                  <div className="flex flex-col items-center gap-6">
-                   <div className="relative">
-                      <div className="absolute inset-0 bg-white blur-3xl opacity-15" />
-                      <div className="relative p-5 bg-white rounded-[2rem] shadow-2xl">
-                        <QRCodeSVG value={`upi://pay?pa=${UPI_ID}&pn=SR+GATEWAY+IN`} size={180} />
+                   <div className="relative group cursor-pointer" onClick={downloadQRCode} title="Click to Download QR Code">
+                      <div className="absolute inset-0 bg-emerald-500 blur-3xl opacity-10 group-hover:opacity-20 transition-opacity" />
+                      <div className="relative p-5 bg-white rounded-[2rem] shadow-2xl transition-transform group-hover:scale-[1.02]">
+                        <QRCodeSVG id="deposit-qr-svg" value={`upi://pay?pa=${gatewayConfig.upiId}&pn=SR+GATEWAY+IN`} size={180} />
                       </div>
+                      <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-4 py-1.5 bg-black hover:bg-slate-900 border border-emerald-500/30 text-emerald-400 font-extrabold uppercase text-[7px] tracking-widest rounded-lg transition-all animate-pulse whitespace-nowrap shadow-[0_0_10px_rgba(16,185,129,0.3)]">
+                        🖱️ Click QR to Download
+                      </span>
                    </div>
-                   <div className="text-center space-y-1">
+                   <div className="text-center space-y-2.5 pt-4">
                      <p className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500 italic">Operating UPI Hub Address</p>
-                     <p className="text-2xl font-black italic tracking-tight text-white">{UPI_ID}</p>
-                     <button onClick={() => copyToClipboard(UPI_ID)} className="px-6 py-2.5 text-[9px] font-black bg-white/10 hover:bg-white/20 rounded-full transition-all border border-white/5 font-mono">COPY UPI</button>
+                     <p className="text-2xl font-black italic tracking-tight text-white">{gatewayConfig.upiId}</p>
+                     <div className="flex gap-2 justify-center">
+                       <button onClick={() => copyToClipboard(gatewayConfig.upiId)} className="px-6 py-2.5 text-[9px] font-black bg-white/10 hover:bg-white/20 text-white rounded-full transition-all border border-white/5 font-mono">COPY UPI ID</button>
+                       <button onClick={downloadQRCode} className="px-6 py-2.5 text-[9px] font-black bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 rounded-full transition-all border border-emerald-500/20 font-mono shadow-[0_0_12px_rgba(16,185,129,0.1)]">DOWNLOAD QR</button>
+                     </div>
                    </div>
                  </div>
 
                  <div className="space-y-4">
                     <div className="space-y-1 px-1">
-                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Amount Loaded (INR)</label>
+                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Deposit Amount (INR)</label>
                        <input 
                          type="number" 
                          value={depositAmount}
                          onChange={(e) => setDepositAmount(e.target.value)}
                          placeholder="0.00"
-                         className="w-full bg-black border border-white/10 rounded-2xl py-4.5 px-6 font-black italic text-2xl outline-none focus:border-emerald-500 transition-all text-emerald-500"
+                         className="w-full bg-black border border-white/10 rounded-2xl py-4.5 px-6 font-black italic text-2xl outline-none focus:border-emerald-500 transition-all text-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.05)]"
                        />
                     </div>
                     <div className="space-y-1 px-1">
@@ -1589,12 +1665,41 @@ export default function App() {
                          className="w-full bg-black border border-white/10 rounded-2xl py-4.5 px-6 font-bold tracking-widest text-lg outline-none focus:border-emerald-500 font-mono text-center text-white placeholder:text-slate-800"
                        />
                     </div>
+                    
+                    <div className="space-y-2 px-1">
+                       <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Upload Payment Screenshot</label>
+                       <div className="relative border-2 border-dashed border-white/10 hover:border-emerald-500/50 rounded-2xl p-6 transition-all bg-black/40 text-center cursor-pointer group shadow-inner">
+                         <input 
+                           type="file" 
+                           accept="image/*" 
+                           onChange={handleFileChange} 
+                           className="absolute inset-0 opacity-0 cursor-pointer z-10" 
+                         />
+                         {depositScreenshot ? (
+                           <div className="space-y-2">
+                             <img 
+                               src={depositScreenshot} 
+                               alt="Receipt thumbnail" 
+                               className="mx-auto h-24 object-cover rounded-lg border border-white/20 shadow-md" 
+                             />
+                             <p className="text-[9px] text-emerald-400 font-bold uppercase w-full">Screenshot Attached (Click to replace)</p>
+                           </div>
+                         ) : (
+                           <div className="space-y-2">
+                             <Upload className="w-8 h-8 text-slate-500 mx-auto group-hover:text-emerald-400 transition-colors" />
+                             <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider">Drag & drop or Click to Upload screenshot</p>
+                             <p className="text-[8px] text-slate-600 uppercase">JPEG or PNG format (max 5MB)</p>
+                           </div>
+                         )}
+                       </div>
+                    </div>
+
                     <button 
                       onClick={handleDeposit}
                       disabled={processing || !depositAmount || !depositUtr}
-                      className="w-full py-5 bg-white text-black font-black uppercase tracking-widest rounded-2xl shadow-2xl active:scale-95 disabled:opacity-50 transition-all font-bold text-xs"
+                      className="w-full py-5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-black uppercase tracking-widest rounded-2xl shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.55)] active:scale-95 disabled:opacity-50 transition-all font-bold text-xs border border-emerald-400/30"
                     >
-                      {processing ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Signal Fund Transfer'}
+                      {processing ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Submit Deposit Request'}
                     </button>
                  </div>
                </div>
@@ -1856,6 +1961,59 @@ export default function App() {
                 </div>
               </section>
 
+              {/* ADMINISTRATIVE GLOBAL GATEWAY PAYOUTS CONFIGURATION */}
+               <section id="global-config-panel-sr" className="p-8 bg-purple-950/15 border border-purple-500/20 rounded-[2.5rem] space-y-6 shadow-[0_0_20px_rgba(168,85,247,0.05)]">
+                 <div className="flex items-center gap-3">
+                   <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                     <Settings className="w-5 h-5 text-purple-400" />
+                   </div>
+                   <div>
+                     <h4 className="text-md font-black uppercase text-purple-400 tracking-wider">Gateway & Bot Configurations</h4>
+                     <p className="text-[8px] text-slate-500 uppercase tracking-widest font-bold">Configure active merchant variables globally</p>
+                   </div>
+                 </div>
+
+                 <div className="space-y-4">
+                   <div className="space-y-1.5 px-1">
+                     <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Global UPI ID</label>
+                     <input 
+                       type="text"
+                       value={activeUpiInput}
+                       onChange={(e) => setActiveUpiInput(e.target.value)}
+                       placeholder="Enter Active UPI Address"
+                       className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-xs outline-none focus:border-purple-500 tracking-wider text-white font-mono"
+                     />
+                   </div>
+                   <div className="space-y-1.5 px-1">
+                     <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Telegram Bot Token</label>
+                     <input 
+                       type="text"
+                       value={activeBotTokenInput}
+                       onChange={(e) => setActiveBotTokenInput(e.target.value)}
+                       placeholder="Enter Telegram bot token"
+                       className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-xs font-mono outline-none focus:border-purple-500 text-white"
+                     />
+                   </div>
+                   <div className="space-y-1.5 px-1">
+                     <label className="text-[9px] font-black uppercase tracking-[0.3em] text-slate-500 italic">Telegram Bot Username (without @)</label>
+                     <input 
+                       type="text"
+                       value={activeBotUsernameInput}
+                       onChange={(e) => setActiveBotUsernameInput(e.target.value)}
+                       placeholder="e.g. MySRGatewayBot"
+                       className="w-full bg-black border border-white/10 rounded-2xl py-4 px-6 text-xs font-mono outline-none focus:border-purple-500 text-white"
+                     />
+                   </div>
+                   <button 
+                     onClick={handleSaveGatewayConfig}
+                     disabled={processing}
+                     className="w-full py-5 bg-purple-600 hover:bg-purple-500 text-white font-black uppercase tracking-widest rounded-2xl shadow-[0_0_20px_rgba(168,85,247,0.3)] hover:shadow-[0_0_30px_rgba(168,85,247,0.6)] transition-all active:scale-95 text-xs font-bold"
+                   >
+                     {processing ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : "Save Configuration Globals"}
+                   </button>
+                 </div>
+               </section>
+
               {/* SYSTEM ADMINISTRATIVE DEDICATED SENDER API */}
               <section className="p-8 bg-purple-950/10 border border-purple-500/12 rounded-[2.5rem] space-y-4">
                 <h4 className="text-xs font-black uppercase text-purple-400 tracking-widest italic">Automated System Send Money API (GET/POST)</h4>
@@ -1899,6 +2057,17 @@ export default function App() {
                              <span className="block text-[8px] text-slate-500 mt-1 uppercase font-mono">User: {p.userName} ({p.mobile})</span>
                              {p.utr && <p className="text-[7px] text-emerald-400 font-mono mt-0.5">UTR Reference_Id: {p.utr}</p>}
                              {p.receiver && <p className="text-[7px] text-blue-400 font-mono mt-0.5">Beneficiary Number: {p.receiver}</p>}
+                             {p.screenshot && (
+                               <div className="mt-3">
+                                 <p className="text-[7px] text-slate-500 uppercase mb-1 font-bold">Attached Screenshot Proof:</p>
+                                 <img 
+                                   src={p.screenshot} 
+                                   alt="Deposit Screenshot" 
+                                   className="h-28 w-auto min-w-[120px] object-cover rounded-xl border border-white/10 hover:border-purple-500/50 cursor-pointer shadow-md active:scale-95 transition-transform max-w-full"
+                                   onClick={() => setExpandedScreenshot(p.screenshot)}
+                                 />
+                               </div>
+                             )}
                            </div>
                            <div className="flex gap-2">
                              <button onClick={() => handleAdminProcessPayout(p.id || p.id, "reject")} className="p-2 py-1.5 bg-red-600/15 text-red-500 hover:bg-red-600/25 rounded-md text-[8px] uppercase font-black">REJECT</button>
@@ -2308,6 +2477,17 @@ export default function App() {
                   </button>
 
                   <button 
+                    onClick={() => { setShowTelegramModal(true); setShowMenu(false); }}
+                    className="w-full p-4.5 bg-sky-500/5 hover:bg-sky-500/10 border border-sky-500/15 rounded-2xl flex items-center gap-4 transition-all text-left shadow-[0_0_12px_rgba(14,165,233,0.15)] group hover:border-sky-500/30 font-bold"
+                  >
+                    <div className="p-2 bg-sky-500/15 rounded-lg text-sky-400"><Send className="w-4 h-4" /></div>
+                    <div>
+                      <p className="text-[10px] uppercase font-black tracking-wider text-sky-400">Telegram Bot Alert</p>
+                      <p className="text-[8px] text-slate-400 font-bold uppercase mt-0.5">Link personal Telegram Bot alerts</p>
+                    </div>
+                  </button>
+
+                  <button 
                     onClick={() => { setShowPrivacyModal(true); setShowMenu(false); }}
                     className="w-full p-4.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl flex items-center gap-4 transition-all text-left group font-bold"
                   >
@@ -2345,10 +2525,10 @@ export default function App() {
               <div className="pt-8 border-t border-white/5 space-y-3">
                 <button 
                   onClick={() => { handleLogOut(); setShowMenu(false); }}
-                  className="w-full py-4 border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-500 rounded-xl font-black uppercase text-[10px] tracking-wider transition-all shadow-[0_0_12px_rgba(239,68,68,0.1)] active:scale-95 flex items-center justify-center gap-2 font-bold"
+                  className="w-full py-4 border border-red-500/30 bg-red-500/5 hover:bg-red-500/20 text-red-500 rounded-xl font-black uppercase text-[10px] tracking-wider transition-all shadow-[0_0_15px_rgba(239,68,68,0.2)] active:scale-95 flex items-center justify-center gap-2 font-bold"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  Kill Session Log Out
+                  Log Out
                 </button>
                 <p className="text-[6.5px] uppercase tracking-widest text-slate-700 font-black text-center italic font-bold">SR GATEWAY MULTI-NODE INSTANCE • LIVE</p>
               </div>
@@ -2458,6 +2638,123 @@ export default function App() {
                 >
                   Mpin Dalo
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* PERSONAL TELEGRAM BOT ALERTS CONFIGURATION MODAL */}
+      <AnimatePresence>
+        {showTelegramModal && (
+          <div className="fixed inset-0 z-[125] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setShowTelegramModal(false)} className="absolute inset-0 bg-black/95 backdrop-blur-md" />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.95 }} 
+              className="relative w-full max-w-sm bg-[#0A0A0A] border border-white/10 rounded-[2.5rem] p-8 shadow-2xl space-y-6 text-xs text-center"
+            >
+              <div className="space-y-4">
+                <div className="relative inline-block mx-auto">
+                  <div className="absolute inset-0 bg-sky-500 blur-2xl opacity-15 animate-pulse rounded-full" />
+                  <div className="relative w-16 h-16 bg-sky-500 rounded-2xl flex items-center justify-center mx-auto text-black shadow-[0_0_20px_rgba(14,165,233,0.3)]">
+                    <Send className="w-8 h-8 animate-wiggle" />
+                  </div>
+                </div>
+                <div>
+                  <h3 className="text-xl font-black italic uppercase tracking-tighter text-white">Telegram Alerts Connector</h3>
+                  <p className="text-[8px] font-black text-sky-400 uppercase tracking-widest mt-1.5 italic">Real-Time account receipts & ledgers</p>
+                </div>
+              </div>
+
+              {userData?.telegramChatId ? (
+                <div className="bg-sky-500/5 border border-sky-500/10 p-5 rounded-2xl text-left space-y-3 font-bold text-slate-300">
+                  <p className="text-[10px] text-emerald-400 uppercase tracking-wider text-center">🎉 Connection State: ACTIVE</p>
+                  <p className="text-[9px] uppercase leading-relaxed text-center">
+                    Your account is fully synchronized under Chat ID <code>{userData.telegramChatId}</code>.
+                  </p>
+                  <p className="text-[8px] text-slate-500 uppercase text-center">
+                    To connect to a different chat, overwrite the Chat ID below.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-amber-500/5 border border-amber-500/10 p-5 rounded-2xl text-left space-y-1 font-semibold text-slate-400 leading-normal">
+                  <p className="text-[9px] uppercase font-black text-amber-500 tracking-wider">⚡ Setup Procedure:</p>
+                  <p>1. Open Telegram & search for Bot Username: <a href={`https://t.me/${gatewayConfig.telegramBotUsername}`} target="_blank" className="text-sky-400 underline font-mono">@{gatewayConfig.telegramBotUsername}</a></p>
+                  <p>2. Send the command <code className="text-white">/start</code> to initialize bot connection.</p>
+                  <p>3. Enter your chat ID (obtainable from bots like @userinfobot) below to complete linking!</p>
+                </div>
+              )}
+
+              <div className="space-y-4 text-left">
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black uppercase tracking-widest px-1 text-slate-500">Your Telegram Chat ID</label>
+                  <input 
+                    type="text" 
+                    value={tempTelegramChatId}
+                    onChange={(e) => setTempTelegramChatId(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Enter Telegram Chat ID"
+                    className="w-full bg-black border border-white/10 rounded-2xl py-4.5 px-6 outline-none focus:border-sky-500 font-bold text-center tracking-widest text-lg font-mono text-white shadow-inner placeholder:text-slate-800 animate-pulse"
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button 
+                    onClick={() => setShowTelegramModal(false)}
+                    className="flex-1 py-4.5 border border-white/10 hover:bg-white/5 rounded-2xl font-black uppercase tracking-widest text-[9px] text-slate-400 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleSaveTelegramId}
+                    disabled={processing || !tempTelegramChatId}
+                    className="flex-1 py-4.5 bg-sky-500 hover:bg-sky-400 text-black font-black uppercase tracking-widest rounded-2xl text-[9px] shadow-[0_0_15px_rgba(14,165,233,0.35)] transition-all active:scale-95 disabled:opacity-50"
+                  >
+                    {processing ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Save & Verify"}
+                  </button>
+                </div>
+              </div>
+
+              {gatewayConfig.telegramBotUsername && (
+                <div className="pt-2 border-t border-white/5 text-center">
+                  <a 
+                    href={`https://t.me/${gatewayConfig.telegramBotUsername}`} 
+                    target="_blank" 
+                    className="text-[9px] text-sky-400 hover:underline font-black uppercase tracking-wider flex items-center justify-center gap-1.5"
+                  >
+                    🔗 Go to Bot: @{gatewayConfig.telegramBotUsername}
+                  </a>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* FULL SCREEN ADMINISTRATIVE IMAGE VIEWER SUBMODAL */}
+      <AnimatePresence>
+        {expandedScreenshot && (
+          <div className="fixed inset-0 z-[140] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setExpandedScreenshot(null)} className="absolute inset-0 bg-black/98 backdrop-blur-md" />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }} 
+              animate={{ opacity: 1, scale: 1 }} 
+              exit={{ opacity: 0, scale: 0.9 }} 
+              className="relative max-w-2xl w-full max-h-[85vh] rounded-[2rem] overflow-hidden bg-[#050505] border border-white/10 flex flex-col items-center shadow-2xl p-4 gap-4"
+            >
+              <div className="w-full flex justify-between items-center px-4 pt-2">
+                <span className="text-[10px] font-black uppercase tracking-wider text-purple-400 italic font-bold">Receipt Screenshot Proof</span>
+                <button onClick={() => setExpandedScreenshot(null)} className="p-2 bg-white/5 hover:bg-white/10 rounded-full text-slate-400 hover:text-white transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="w-full flex-1 max-h-[70vh] flex items-center justify-center p-2">
+                <img 
+                  src={expandedScreenshot} 
+                  alt="Full-sized receipt proof screenshot" 
+                  className="max-h-[68vh] max-w-full object-contain rounded-xl border border-white/5 shadow-2xl" 
+                />
               </div>
             </motion.div>
           </div>
