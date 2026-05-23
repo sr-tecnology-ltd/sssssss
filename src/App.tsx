@@ -242,6 +242,8 @@ export default function App() {
         setActiveBotTokenInput(conf.telegramBotToken);
         setActiveBotUsernameInput(conf.telegramBotUsername);
       }
+    }, (err) => {
+      console.warn("Global configuration load skipped or not permitted yet. Normal until login:", err.message);
     });
 
     // Check route immediately
@@ -359,8 +361,13 @@ export default function App() {
                   return;
                 }
               }
-            } catch (err) {
+            } catch (err: any) {
               console.error("Failed loading user profile via API", err);
+              if (err.response && err.response.status === 403) {
+                localStorage.removeItem('sr_token');
+                localStorage.removeItem('sr_user_data');
+                await firebaseLogOut();
+              }
             }
           }
 

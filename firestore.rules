@@ -16,7 +16,7 @@ service cloud.firestore {
       return isSignedIn() && 
              res != null && 
              res.data != null && 
-             res.data.get('mobile', '') + '@kingwallet.com' == request.auth.token.email;
+             res.data.get('mobile', '') == request.auth.token.email.split('@')[0];
     }
 
     function isAdmin() {
@@ -70,6 +70,12 @@ service cloud.firestore {
     match /giftCodes/{codeId} {
       allow read: if isSignedIn(); // Anyone can check or look up codes
       allow write: if isAdmin();  // Only admins can create codes
+    }
+
+    // --- Settings Collection ---
+    match /settings/{docId} {
+      allow get: if isSignedIn();
+      allow list, write: if isAdmin();
     }
 
     // --- Lifafas Collection ---

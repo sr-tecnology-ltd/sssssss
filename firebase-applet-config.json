@@ -3,7 +3,7 @@
   "appId": "1:451685459726:web:4907af0b653899cb88995f",
   "apiKey": "AIzaSyDNq8W-EN4TRdz8MqgATSzS65gqhEnzlRY",
   "authDomain": "sr-gateway-in-8ae3f.firebaseapp.com",
-  "firestoreDatabaseId": "",
+  "firestoreDatabaseId": "(default)",
   "storageBucket": "sr-gateway-in-8ae3f.firebasestorage.app",
   "messagingSenderId": "451685459726",
   "measurementId": "G-3RMRE5Z47Q"
