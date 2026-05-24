@@ -8,6 +8,7 @@ import * as admin from "firebase-admin";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import firebaseConfig from "./firebase-applet-config.json";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const archiverModule = require("archiver") as any;
@@ -53,11 +54,10 @@ function cleanPrivateKey(rawKey: string): string {
 
 const ADMIN_SECRET_ROUTE = process.env.ADMIN_SECRET_ROUTE || "/sradmin1KJRD829";
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+const PORT = 3000;
 
-  console.log("Starting SR GATEWAY IN backend node process...");
+console.log("Starting SR GATEWAY IN backend node process...");
 
   // --- Dynamic Firebase Admin Initialization ---
   let dbInstance: any = null;
@@ -68,6 +68,11 @@ async function startServer() {
       const adminObj: any = (admin as any).default || admin;
       const apps = adminObj.apps || [];
       let appInstance: any = null;
+      
+      const config = firebaseConfig;
+      const targetProjId = config.projectId;
+      const customDbId = config.firestoreDatabaseId;
+
       if (!apps.length) {
         // 1. Check for local service-account.json
         const saPath = path.join(process.cwd(), "service-account.json");
@@ -78,19 +83,9 @@ async function startServer() {
             credential: adminObj.credential.cert(serviceAccount)
           });
           
-          // If the service account project matches the applet config, we can use the same custom database
-          const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-          let databaseId = "";
-          if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-            if (config.projectId === serviceAccount.project_id && config.firestoreDatabaseId) {
-              databaseId = config.firestoreDatabaseId;
-            }
-          }
-          
-          if (databaseId) {
-            console.log(`Setting up custom database instance for Service Account: ${databaseId}`);
-            dbInstance = getFirestore(appInstance, databaseId);
+          if (serviceAccount.project_id === targetProjId && customDbId && customDbId !== "(default)") {
+            console.log(`Setting up custom database instance for Service Account: ${customDbId}`);
+            dbInstance = getFirestore(appInstance, customDbId);
           } else {
             console.log("Setting up default database instance for Service Account.");
             dbInstance = getFirestore(appInstance);
@@ -108,49 +103,40 @@ async function startServer() {
             }),
             databaseURL: process.env.FIREBASE_DATABASE_URL
           });
-          dbInstance = getFirestore(appInstance);
-        } else {
-          // Fallback to local applet config JSON
-          const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-          if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-            console.log(`Initializing Firebase Admin (Lazy Config) for Project: ${config.projectId}`);
-            appInstance = adminObj.initializeApp({ projectId: config.projectId });
-            if (config.firestoreDatabaseId) {
-              console.log(`Setting up custom database instance: ${config.firestoreDatabaseId}`);
-              dbInstance = getFirestore(appInstance, config.firestoreDatabaseId);
-            } else {
-              dbInstance = getFirestore(appInstance);
-            }
+          
+          if (customDbId && customDbId !== "(default)") {
+            dbInstance = getFirestore(appInstance, customDbId);
           } else {
-            console.log("No Firebase configurations found. Standard boot...");
-            appInstance = adminObj.initializeApp();
+            dbInstance = getFirestore(appInstance);
+          }
+        } else {
+          // If we are on Vercel, there are no default credentials in the lambda, so we MUST throw an error
+          if (process.env.VERCEL) {
+            throw new Error("Credentials missing! Please define FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY in your Vercel Dashboard env variables. This is required for Vercel functions to securely query Firestore. See .env.example for formatting instructions.");
+          }
+          
+          // Fallback to local applet config JSON (Local Developer / AI Studio Box with Application Default Credentials)
+          console.log(`Initializing Firebase Admin (Lazy Config) for Project: ${config.projectId}`);
+          appInstance = adminObj.initializeApp({ projectId: config.projectId });
+          if (customDbId && customDbId !== "(default)") {
+            console.log(`Setting up custom database instance: ${customDbId}`);
+            dbInstance = getFirestore(appInstance, customDbId);
+          } else {
             dbInstance = getFirestore(appInstance);
           }
         }
       } else {
         appInstance = apps[0];
-        // If app already initialized, check for config/service-account to instantiate correct db
+        // If app already initialized, check configurations
         const saPath = path.join(process.cwd(), "service-account.json");
-        const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-        
-        let targetProjId = "";
-        let customDbId = "";
-        
-        if (fs.existsSync(configPath)) {
-          const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-          targetProjId = config.projectId;
-          customDbId = config.firestoreDatabaseId;
-        }
-
         if (fs.existsSync(saPath)) {
           const serviceAccount = JSON.parse(fs.readFileSync(saPath, "utf-8"));
-          if (serviceAccount.project_id === targetProjId && customDbId) {
+          if (serviceAccount.project_id === targetProjId && customDbId && customDbId !== "(default)") {
             dbInstance = getFirestore(appInstance, customDbId);
           } else {
             dbInstance = getFirestore(appInstance);
           }
-        } else if (customDbId) {
+        } else if (customDbId && customDbId !== "(default)") {
           dbInstance = getFirestore(appInstance, customDbId);
         } else {
           dbInstance = getFirestore(appInstance);
@@ -158,6 +144,7 @@ async function startServer() {
       }
     } catch (e: any) {
       console.error("Firebase Admin Initialization Failed:", e.message);
+      throw e; // We must throw the initialization exception so that handlers catch and show it!
     }
     return dbInstance;
   };
@@ -1750,44 +1737,51 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
+  // Vite middleware for development (Run dynamically asynchronously if not on Vercel)
   const distPath = path.join(process.cwd(), "dist");
-  if (process.env.NODE_ENV !== "production" || !fs.existsSync(distPath)) {
-    const vite = await createViteServer({
+  if (!process.env.VERCEL && (process.env.NODE_ENV !== "production" || !fs.existsSync(distPath))) {
+    createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
-    });
-    app.use(vite.middlewares);
+    }).then((vite) => {
+      app.use(vite.middlewares);
 
-    // Fallback for SPA routing in development/Vite mode
-    app.get("*", async (req, res, next) => {
-      // Ignore API requests
-      if (req.originalUrl.startsWith("/api/")) {
-        return next();
-      }
-      try {
-        const htmlPath = path.resolve(process.cwd(), "index.html");
-        let html = fs.readFileSync(htmlPath, "utf-8");
-        // Apply Vite HTML transforms
-        html = await vite.transformIndexHtml(req.originalUrl, html);
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
-      } catch (err) {
-        next(err);
-      }
+      // Fallback for SPA routing in development/Vite mode
+      app.get("*", async (req, res, next) => {
+        // Ignore API requests
+        if (req.originalUrl.startsWith("/api/")) {
+          return next();
+        }
+        try {
+          const htmlPath = path.resolve(process.cwd(), "index.html");
+          let html = fs.readFileSync(htmlPath, "utf-8");
+          // Apply Vite HTML transforms
+          html = await vite.transformIndexHtml(req.originalUrl, html);
+          res.status(200).set({ "Content-Type": "text/html" }).end(html);
+        } catch (err) {
+          next(err);
+        }
+      });
+
+      const devPort = Number(process.env.PORT || 3000);
+      app.listen(devPort, "0.0.0.0", () => {
+        console.log(`Express microdev server handles inputs on http://localhost:${devPort}`);
+      });
+    }).catch((err) => {
+      console.error("Vite Dev Server boot failed:", err);
     });
   } else {
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
+
+    if (!process.env.VERCEL) {
+      const prodPort = Number(process.env.PORT || 3000);
+      app.listen(prodPort, "0.0.0.0", () => {
+        console.log(`Server listening on Port ${prodPort}`);
+      });
+    }
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Express microserver handles inputs on http://localhost:${PORT}`);
-  });
-}
-
-startServer().catch((err) => {
-  console.error("FATAL: Server booting failure:", err);
-  process.exit(1);
-});
+export default app;
