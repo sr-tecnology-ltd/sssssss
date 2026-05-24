@@ -61,6 +61,7 @@ console.log("Starting SR GATEWAY IN backend node process...");
 
   // --- Dynamic Firebase Admin Initialization ---
   let dbInstance: any = null;
+  let firebaseInitError: string | null = null;
   const getDb = () => {
     if (dbInstance) return dbInstance;
     
@@ -144,12 +145,34 @@ console.log("Starting SR GATEWAY IN backend node process...");
       }
     } catch (e: any) {
       console.error("Firebase Admin Initialization Failed:", e.message);
-      throw e; // We must throw the initialization exception so that handlers catch and show it!
+      firebaseInitError = e.message;
+      return null;
     }
     return dbInstance;
   };
 
   app.use(express.json());
+
+  // --- Middleware: Verify Database Connection State ---
+  app.use((req: any, res: any, next: any) => {
+    if (req.originalUrl.startsWith("/api/")) {
+      try {
+        const db = getDb();
+        if (!db) {
+          return res.status(500).json({
+            status: "error",
+            message: `Firebase Database Offline. ${firebaseInitError || "Failed to initialize Firebase Admin SDK."}`
+          });
+        }
+      } catch (err: any) {
+        return res.status(500).json({
+          status: "error",
+          message: `Firebase Database Error: ${err.message}`
+        });
+      }
+    }
+    next();
+  });
 
   // --- Global Dynamic Settings Helper ---
   const getGlobalSettings = async () => {
