@@ -5,11 +5,29 @@ import { createServer as createViteServer } from "vite";
 import axios from "axios";
 import dotenv from "dotenv";
 import * as admin from "firebase-admin";
-import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import firebaseConfig from "./firebase-applet-config.json";
+
+const adminObj: any = (admin as any).default || admin;
+const getFirestore = (appInstance: any, databaseId?: string) => {
+  if (databaseId && databaseId !== "(default)") {
+    return adminObj.firestore(appInstance, databaseId);
+  }
+  return adminObj.firestore(appInstance);
+};
+const FieldValue = adminObj.firestore.FieldValue;
+const Timestamp = adminObj.firestore.Timestamp;
 import { createRequire } from "module";
+
+let firebaseConfig: any = null;
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(configPath)) {
+    firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  }
+} catch (err: any) {
+  console.error("Failed to load firebase-applet-config.json dynamically:", err.message);
+}
 const require = createRequire(import.meta.url);
 const archiverModule = require("archiver") as any;
 const ZipArchive = archiverModule.ZipArchive;
@@ -70,21 +88,56 @@ console.log("Starting SR GATEWAY IN backend node process...");
       const apps = adminObj.apps || [];
       let appInstance: any = null;
       
-      const config = firebaseConfig;
-      const targetProjId = config.projectId;
-      const customDbId = config.firestoreDatabaseId;
+      const config = firebaseConfig || {};
+      const targetProjId = config.projectId || process.env.FIREBASE_PROJECT_ID || "";
+      const customDbId = config.firestoreDatabaseId || "";
 
       if (!apps.length) {
-        // 1. Check for local service-account.json
+        // 1. Check for single environment secret containing the ENTIRE service-account JSON structure
+        let serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS;
+        let serviceAccount: any = null;
+        
+        if (serviceAccountJson) {
+          try {
+            const rawJson = serviceAccountJson.trim();
+            if (rawJson.startsWith("{") || rawJson.startsWith('"') || rawJson.startsWith("'")) {
+              let cleanJson = rawJson;
+              if ((cleanJson.startsWith('"') && cleanJson.endsWith('"')) || (cleanJson.startsWith("'") && cleanJson.endsWith("'"))) {
+                cleanJson = cleanJson.slice(1, -1);
+              }
+              serviceAccount = JSON.parse(cleanJson);
+              console.log("Successfully parsed FIREBASE_SERVICE_ACCOUNT JSON environment variable!");
+            }
+          } catch (jsonErr: any) {
+            console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON environment variable:", jsonErr.message);
+            firebaseInitError = "Invalid FIREBASE_SERVICE_ACCOUNT JSON format: " + jsonErr.message;
+          }
+        }
+
         const saPath = path.join(process.cwd(), "service-account.json");
-        if (fs.existsSync(saPath)) {
-          console.log("Initializing Firebase Admin SDK using local service-account.json...");
-          const serviceAccount = JSON.parse(fs.readFileSync(saPath, "utf-8"));
+        
+        if (serviceAccount) {
+          console.log("Initializing Firebase Admin SDK using parsed FIREBASE_SERVICE_ACCOUNT environment variable...");
           appInstance = adminObj.initializeApp({
-            credential: adminObj.credential.cert(serviceAccount)
+            credential: adminObj.credential.cert(serviceAccount),
+            databaseURL: process.env.FIREBASE_DATABASE_URL
           });
           
-          if (serviceAccount.project_id === targetProjId && customDbId && customDbId !== "(default)") {
+          if (customDbId && customDbId !== "(default)") {
+            dbInstance = getFirestore(appInstance, customDbId);
+          } else {
+            dbInstance = getFirestore(appInstance);
+          }
+        }
+        // 2. Check for local service-account.json
+        else if (fs.existsSync(saPath)) {
+          console.log("Initializing Firebase Admin SDK using local service-account.json...");
+          const serviceAccountFile = JSON.parse(fs.readFileSync(saPath, "utf-8"));
+          appInstance = adminObj.initializeApp({
+            credential: adminObj.credential.cert(serviceAccountFile)
+          });
+          
+          if (serviceAccountFile.project_id === targetProjId && customDbId && customDbId !== "(default)") {
             console.log(`Setting up custom database instance for Service Account: ${customDbId}`);
             dbInstance = getFirestore(appInstance, customDbId);
           } else {
@@ -92,16 +145,20 @@ console.log("Starting SR GATEWAY IN backend node process...");
             dbInstance = getFirestore(appInstance);
           }
         }
-        // 2. Check for environment secrets
+        // 3. Check for individual environment secrets
         else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
           console.log("Initializing Firebase Admin SDK using Environment Secrets...");
           const formattedKey = cleanPrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+          const certPayload = {
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: formattedKey,
+            project_id: process.env.FIREBASE_PROJECT_ID,
+            client_email: process.env.FIREBASE_CLIENT_EMAIL,
+            private_key: formattedKey
+          };
           appInstance = adminObj.initializeApp({
-            credential: adminObj.credential.cert({
-              projectId: process.env.FIREBASE_PROJECT_ID,
-              clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-              privateKey: formattedKey
-            }),
+            credential: adminObj.credential.cert(certPayload),
             databaseURL: process.env.FIREBASE_DATABASE_URL
           });
           
@@ -113,7 +170,7 @@ console.log("Starting SR GATEWAY IN backend node process...");
         } else {
           // If we are on Vercel, there are no default credentials in the lambda, so we MUST throw an error
           if (process.env.VERCEL) {
-            throw new Error("Credentials missing! Please define FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY in your Vercel Dashboard env variables. This is required for Vercel functions to securely query Firestore. See .env.example for formatting instructions.");
+            throw new Error("Credentials missing! For Vercel, the easiest fix is to define a 'FIREBASE_SERVICE_ACCOUNT' environment variable and paste your ENTIRE service-account.json content directly into it. Alternatively, define individual variables: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, and FIREBASE_PRIVATE_KEY. Crucial: After adding these variables in the Vercel dashboard, you MUST trigger a NEW deployment (redeploy) in Vercel for these environment variable changes to take effect.");
           }
           
           // Fallback to local applet config JSON (Local Developer / AI Studio Box with Application Default Credentials)

@@ -628,7 +628,22 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Auth Fail:", err);
-      setError(err.response?.data?.message || err.message || "Credential authentication failure.");
+      let friendlyMsg = "Credential authentication failure.";
+      if (err.response) {
+        if (typeof err.response.data === 'string' && err.response.data.includes("<pre>")) {
+          const match = err.response.data.match(/<pre>([\s\S]*?)<\/pre>/);
+          friendlyMsg = match ? match[1].trim() : "Internal Server Crash (500) - Check your Vercel Dashboard Logs.";
+        } else if (typeof err.response.data === 'string' && err.response.data.trim().startsWith("<!DOCTYPE")) {
+          friendlyMsg = "Internal Serverless Function Error (500) - Firebase environment setup mismatch.";
+        } else if (err.response.data?.message) {
+          friendlyMsg = err.response.data.message;
+        } else {
+          friendlyMsg = `Server Error (500): Check Firebase environment variables or local databases.`;
+        }
+      } else if (err.message) {
+        friendlyMsg = err.message;
+      }
+      setError(friendlyMsg);
     } finally {
       setProcessing(false);
     }
