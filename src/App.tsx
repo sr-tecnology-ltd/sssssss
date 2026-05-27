@@ -632,13 +632,15 @@ export default function App() {
       if (err.response) {
         if (typeof err.response.data === 'string' && err.response.data.includes("<pre>")) {
           const match = err.response.data.match(/<pre>([\s\S]*?)<\/pre>/);
-          friendlyMsg = match ? match[1].trim() : "Internal Server Crash (500) - Check your Vercel Dashboard Logs.";
+          friendlyMsg = match ? match[1].trim() : "Internal Server Crash (500)";
         } else if (typeof err.response.data === 'string' && err.response.data.trim().startsWith("<!DOCTYPE")) {
-          friendlyMsg = "Internal Serverless Function Error (500) - Firebase environment setup mismatch.";
+          friendlyMsg = "Internal Serverless Exception: Check your Vercel logs or firebase environment variables.";
         } else if (err.response.data?.message) {
           friendlyMsg = err.response.data.message;
+        } else if (err.response.data) {
+          friendlyMsg = typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data);
         } else {
-          friendlyMsg = `Server Error (500): Check Firebase environment variables or local databases.`;
+          friendlyMsg = `Server Error (${err.response.status || 500}). Please check Vercel Logs.`;
         }
       } else if (err.message) {
         friendlyMsg = err.message;

@@ -89,22 +89,35 @@ console.log("Starting SR GATEWAY IN backend node process...");
       let appInstance: any = null;
       
       const config = firebaseConfig || {};
-      const targetProjId = config.projectId || process.env.FIREBASE_PROJECT_ID || "";
+      const targetProjId = config.projectId || process.env.FIREBASE_PROJECT_ID || process.env.PROJECT_ID || "";
       const customDbId = config.firestoreDatabaseId || "";
 
       if (!apps.length) {
-        // 1. Check for single environment secret containing the ENTIRE service-account JSON structure
+        // 1. Check for single environment secret containing the ENTIRE service-account JSON structure (string, base64 or object)
         let serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS;
         let serviceAccount: any = null;
         
         if (serviceAccountJson) {
           try {
-            const rawJson = serviceAccountJson.trim();
+            let rawJson = serviceAccountJson.trim();
+            // Fallback for base64-encoded string
+            if (!rawJson.startsWith("{") && !rawJson.startsWith("[") && /^[a-zA-Z0-9+/={}\s\r\n]+$/.test(rawJson)) {
+              try {
+                const decoded = Buffer.from(rawJson, 'base64').toString('utf-8');
+                if (decoded.trim().startsWith("{")) {
+                  rawJson = decoded.trim();
+                  console.log("Successfully decoded base64 FIREBASE_SERVICE_ACCOUNT!");
+                }
+              } catch (b64Err) {
+                // Ignore and treat as non-base64
+              }
+            }
             if (rawJson.startsWith("{") || rawJson.startsWith('"') || rawJson.startsWith("'")) {
               let cleanJson = rawJson;
               if ((cleanJson.startsWith('"') && cleanJson.endsWith('"')) || (cleanJson.startsWith("'") && cleanJson.endsWith("'"))) {
                 cleanJson = cleanJson.slice(1, -1);
               }
+              cleanJson = cleanJson.replace(/\\n/g, '\n');
               serviceAccount = JSON.parse(cleanJson);
               console.log("Successfully parsed FIREBASE_SERVICE_ACCOUNT JSON environment variable!");
             }
@@ -146,15 +159,23 @@ console.log("Starting SR GATEWAY IN backend node process...");
           }
         }
         // 3. Check for individual environment secrets
-        else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+        else if (
+          (process.env.FIREBASE_PROJECT_ID || process.env.PROJECT_ID) &&
+          (process.env.FIREBASE_CLIENT_EMAIL || process.env.CLIENT_EMAIL) &&
+          (process.env.FIREBASE_PRIVATE_KEY || process.env.PRIVATE_KEY)
+        ) {
           console.log("Initializing Firebase Admin SDK using Environment Secrets...");
-          const formattedKey = cleanPrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+          const prjId = process.env.FIREBASE_PROJECT_ID || process.env.PROJECT_ID || "";
+          const clEmail = process.env.FIREBASE_CLIENT_EMAIL || process.env.CLIENT_EMAIL || "";
+          const privKey = process.env.FIREBASE_PRIVATE_KEY || process.env.PRIVATE_KEY || "";
+          const formattedKey = cleanPrivateKey(privKey);
+          
           const certPayload = {
-            projectId: process.env.FIREBASE_PROJECT_ID,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            projectId: prjId,
+            clientEmail: clEmail,
             privateKey: formattedKey,
-            project_id: process.env.FIREBASE_PROJECT_ID,
-            client_email: process.env.FIREBASE_CLIENT_EMAIL,
+            project_id: prjId,
+            client_email: clEmail,
             private_key: formattedKey
           };
           appInstance = adminObj.initializeApp({
